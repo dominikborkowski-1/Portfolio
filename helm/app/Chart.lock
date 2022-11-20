@@ -1,0 +1,18 @@
+dependencies:
+- name: mongodb
+  repository: https://charts.bitnami.com/bitnami
+  version: 13.3.1
+- name: elasticsearch
+  repository: https://helm.elastic.co
+  version: 7.17.3
+- name: fluent-bit
+  repository: https://fluent.github.io/helm-charts
+  version: 0.21.1
+- name: kibana
+  repository: https://helm.elastic.co
+  version: 7.17.3
+- name: kube-prometheus-stack
+  repository: https://prometheus-community.github.io/helm-charts
+  version: 41.7.4
+digest: sha256:1a480d8208ec05326652f2ae742142d5f2eba592a614b3169fd746d03be1c76b
+generated: "2022-11-15T13:45:36.891841604+01:00"

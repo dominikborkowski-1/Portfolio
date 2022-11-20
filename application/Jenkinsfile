@@ -1,0 +1,186 @@
+pipeline {
+    agent any
+
+    environment {
+        GIT_URL_HTTP = "gitlab.com/develeap3/portfolio-app"
+        GIT_URL_HELM_HTTP = "gitlab.com/develeap3/portfolio-configurations"
+    }
+
+    options{
+        gitLabConnection("gitlabconnection")
+    }
+
+    triggers {
+
+        gitlab(
+            triggerOnPush: true,
+            branchFilterType: 'All'
+        )
+    }
+
+    stages{
+
+        stage("Calculate & Set version") {
+            when {
+                branch "main"
+            }
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'gitlabuserpass', passwordVariable: 'GL_PASS', usernameVariable: 'GL_USER')]) {
+                        sh "git fetch https://${GL_USER}:${GL_PASS}@${env.GIT_URL_HTTP} --tags"
+                    }
+                    previousTag = sh(script: "git describe --tags --abbrev=0 || true", returnStdout: true).trim()  // x.y.z or empty string. `grep` is used to prevent returning a tag from another release branch; `true` is used to not fail the pipeline if grep returns nothing.
+                    env.PREVIOUSVERSION=previousTag
+
+                    if (!previousTag) {
+                        patch = "0"
+                    } else {
+                        patch = (previousTag.tokenize(".")[2].toInteger() + 1).toString()
+                    }
+                    prevversion = (previousTag.tokenize(".")[0]).toString() + "." + (previousTag.tokenize(".")[1]).toString()
+                    env.VERSION = prevversion + "." + patch
+                }
+            }
+        }
+
+
+        stage("Checkout App repository"){
+            steps{
+                deleteDir()
+                checkout([$class: 'GitSCM', branches: [[name: '**']], extensions: [], userRemoteConfigs: [[credentialsId: 'githubconnection', url: 'git@gitlab.com:develeap3/portfolio-app.git']]])
+                echo "Checkout App repository"
+            }
+        }
+
+        stage("Build"){
+            steps{
+                script{
+                    dir('app/server'){
+                        sh "docker build -t portfolioserverimg:$env.VERSION ."
+                    }
+                }
+            }
+        }
+
+        stage("UnitTest"){
+            steps{
+                script{
+                    dir('app'){
+                        sh "docker-compose up -d"
+                    }
+                }
+                sh "sleep 20"
+                sh "chmod +x app/unittest.sh"
+                sh "sh app/unittest.sh"
+                script{
+                    dir('app'){
+                        sh "docker rm -f portfolioserver"
+                        sh "docker rm -f portfoliodb"
+                    }
+                }
+            }
+        }
+
+        stage("E2ETest"){
+            steps{
+                script{
+                    dir('app'){
+                        sh "docker-compose up -d"
+                    }
+                }
+                sh "sleep 20"
+                sh "chmod +x app/e2etest.sh"
+                sh "sh app/e2etest.sh"
+                script{
+                    dir('app'){
+                        sh "docker rm -f portfolioserver"
+                        sh "docker rm -f portfoliodb"
+                    }
+                }
+            }
+        }
+
+
+        stage("DockerTag"){
+            when {
+                branch "main"
+            }
+            steps{
+                script{
+                    dir('app/server'){
+                        sh "docker tag portfolioserverimg:$env.VERSION europe-central2-docker.pkg.dev/atomic-router-366510/portfolioapp/portfolioappimg:$env.VERSION"
+                    }
+                }
+            }
+        }
+        stage("Push"){
+            when {
+                branch "main"
+            }
+            steps{
+                script{
+                    dir('app/server'){
+                        sh "docker push europe-central2-docker.pkg.dev/atomic-router-366510/portfolioapp/portfolioappimg:$env.VERSION" 
+                    }
+                }
+            }
+        }
+
+        stage("GitTag") {
+            when {
+                branch "main"
+            }
+            steps {
+                script {
+                    // sshagent(credentials: ["jenkins-ssh"]) {
+                    withCredentials([usernamePassword(credentialsId: 'gitlabuserpass', passwordVariable: 'GL_PASS', usernameVariable: 'GL_USER')]) {
+                        sh '''git config --global user.email "dominikborkowski89@gmail.com"'''
+                        sh '''git config --global user.name "dominik-ops"'''
+                        sh "git clean -f -x"
+                        sh "git tag -a ${env.VERSION} -m 'version ${env.VERSION}'"
+                        sh "git push https://${GL_USER}:${GL_PASS}@${env.GIT_URL_HTTP} --tag"
+                    }
+                        
+                        
+                }
+            }
+        }
+
+        stage("Checkout Helm Configurations Repository") {
+            when {
+                branch "main"
+            }
+            steps {
+                deleteDir()
+                checkout([$class: 'GitSCM', branches: [[name: '**']], extensions: [], userRemoteConfigs: [[credentialsId: 'githubconnection', url: 'git@gitlab.com:develeap3/portfolio-configurations.git']]])
+                echo "Checkout Helm Configurations Repository"
+            }
+        }
+
+        stage("Update Helm Chart") {
+            when {
+                branch "main"
+            }
+
+
+            steps{
+                script{
+                    withCredentials([usernamePassword(credentialsId: 'gitlabuserpass', passwordVariable: 'GL_PASS', usernameVariable: 'GL_USER')]) {
+                        dir("portfolioapp"){
+                            sh "git checkout main"
+                            sh "cat values.yaml"
+                            sh "sed -i 's+europe-central2-docker.pkg.dev/atomic-router-366510/portfolioapp/portfolioappimg.*+europe-central2-docker.pkg.dev/atomic-router-366510/portfolioapp/portfolioappimg:${env.VERSION}+g' values.yaml"
+                            sh "cat values.yaml"
+                            sh "git add ."
+                            sh "git commit -m 'Updated image tag to ${env.VERSION}'"
+                            sh "git push -uf https://${GL_USER}:${GL_PASS}@${env.GIT_URL_HELM_HTTP}"
+                        }
+                    }
+                }
+            }
+        }
+
+    }
+}
+
+
